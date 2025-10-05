@@ -70,27 +70,85 @@ def summate(a: float, b: float) -> float:
 
 async def search_documents(query: str) -> str:
     """Useful for answering natural language questions about HPC news.
-    Always include source file names in your response to the user."""
-    response = await query_engine.aquery(query)
+    Returns the best matching result with its source."""
 
-    # Extract source information from response
-    sources = []
-    if hasattr(response, 'source_nodes'):
-        for node in response.source_nodes:
-            if hasattr(node, 'metadata') and 'file_path' in node.metadata:
-                # Extract just the filename from the full path
-                file_path = node.metadata['file_path']
-                filename = file_path.split('/')[-1]
-                sources.append(filename)
+    # Get retriever to access individual nodes
+    retriever = index.as_retriever(similarity_top_k=5)
+    nodes = await retriever.aretrieve(query)
 
-    # Format response with sources - make it very clear for the LLM
-    result = str(response)
-    if sources:
-        source_list = "\n".join(f"- {source}" for source in set(sources))
-        result += f"\n\nSOURCE FILES: {source_list}"
-        result += "\n\nIMPORTANT: Always mention these source files when responding to the user."
+    if not nodes:
+        return "No relevant documents found."
 
-    return result
+    # Prepare candidates for LLM evaluation
+    candidates = []
+    for i, node in enumerate(nodes):
+        filename = "unknown"
+        if hasattr(node, 'metadata') and 'file_path' in node.metadata:
+            filename = node.metadata['file_path'].split('/')[-1]
+
+        candidates.append({
+            'index': i,
+            'text': node.text[:500] + "..." if len(node.text) > 500 else node.text,
+            'filename': filename,
+            'score': node.score if hasattr(node, 'score') else 0
+        })
+
+    # Create evaluation prompt
+    eval_prompt = f"""Given the query: "{query}"
+
+Please evaluate these {len(candidates)} document excerpts and choose the BEST one that most directly answers the query:
+
+"""
+
+    for i, candidate in enumerate(candidates):
+        eval_prompt += f"Option {i+1} (from {candidate['filename']}):\n{candidate['text']}\n\n"
+
+    eval_prompt += """Respond with ONLY the number (1-5) of the best option that most directly answers the query."""
+
+    # Use LLM to choose best result
+    eval_response = await llm.acomplete(eval_prompt)
+
+    try:
+        best_index = int(eval_response.text.strip()) - 1
+        if 0 <= best_index < len(candidates):
+            best_candidate = candidates[best_index]
+
+            # Generate final answer using the best node
+            answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+
+Document excerpt:
+{nodes[best_index].text}
+
+Provide a clear, concise answer based on the information in this document."""
+
+            answer_response = await llm.acomplete(answer_prompt)
+
+            return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
+        else:
+            # Fallback to first result
+            best_candidate = candidates[0]
+            answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+
+Document excerpt:
+{nodes[0].text}
+
+Provide a clear, concise answer based on the information in this document."""
+
+            answer_response = await llm.acomplete(answer_prompt)
+            return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
+
+    except (ValueError, IndexError):
+        # Fallback to first result if evaluation fails
+        best_candidate = candidates[0]
+        answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+
+Document excerpt:
+{nodes[0].text}
+
+Provide a clear, concise answer based on the information in this document."""
+
+        answer_response = await llm.acomplete(answer_prompt)
+        return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
 
 
 llm = Ollama(
@@ -102,7 +160,7 @@ llm = Ollama(
 query_engine = index.as_query_engine(
     llm=llm,
     response_mode="compact",
-    similarity_top_k=3,
+    similarity_top_k=5,
     include_text=True
 )
 # Create an enhanced workflow with both tools
@@ -114,10 +172,14 @@ agent = FunctionAgent(
 
     IMPORTANT: When you use the search_documents function and it
     provides source files, you MUST always include those source file
-    names in your final response to the user.
+    names in your final response to the user. If you didn't use this
+    tool, use 'None' as source.
+    IMPORTANT: always specify the tool you used for the answer, if you
+    didn't use a tool, specify 'None'
     Format the output as
     "Answer: answer text
-    Sources: filename1.txt, filename2.txt"
+    Sources: filename1.txt, filename2.txt
+    Tools: tool"
     """,
 )
 
