@@ -21,6 +21,7 @@ import os
 d = 768
 embed_model = "nomic-embed-text"
 faiss_index = faiss.IndexFlatL2(d)
+llm_model = "llama3.1-8b-long-ctx:latest"
 
 # Create vector store
 vector_store = FaissVectorStore(faiss_index=faiss_index)
@@ -62,8 +63,14 @@ def multiply(a: float, b: float) -> float:
     return a * b
 
 
+def summate(a: float, b: float) -> float:
+    """Useful for summing two numbers."""
+    return a + b
+
+
 async def search_documents(query: str) -> str:
-    """Useful for answering natural language questions about HPC news."""
+    """Useful for answering natural language questions about HPC news.
+    Always include source file names in your response to the user."""
     response = await query_engine.aquery(query)
 
     # Extract source information from response
@@ -76,17 +83,18 @@ async def search_documents(query: str) -> str:
                 filename = file_path.split('/')[-1]
                 sources.append(filename)
 
-    # Format response with sources
+    # Format response with sources - make it very clear for the LLM
     result = str(response)
     if sources:
-        result += "\n\nSources:\n" + "\n".join(
-            f"- {source}" for source in set(sources))
+        source_list = "\n".join(f"- {source}" for source in set(sources))
+        result += f"\n\nSOURCE FILES: {source_list}"
+        result += "\n\nIMPORTANT: Always mention these source files when responding to the user."
 
     return result
 
 
 llm = Ollama(
-    model="llama3.1:latest",
+    model=llm_model,
     request_timeout=120.0,
     # Manually set the context window to limit memory usage
     context_window=8000,
@@ -99,30 +107,34 @@ query_engine = index.as_query_engine(
 )
 # Create an enhanced workflow with both tools
 agent = FunctionAgent(
-    tools=[multiply, search_documents],
+    tools=[multiply, summate, search_documents],
     llm=llm,
     system_prompt="""You are a helpful assistant that can perform calculations
-    and search through documents to answer questions.""",
+    and search through documents to answer questions.
+
+    IMPORTANT: When you use the search_documents function and it
+    provides source files, you MUST always include those source file
+    names in your final response to the user.
+    Format the output as
+    "Answer: answer text
+    Sources: filename1.txt, filename2.txt"
+    """,
 )
 
 
 # Now we can ask questions about the documents or do calculations
 async def main():
-    # Test the search function directly
-    search_result = await search_documents(
-        "What is the latest news about NVIDIA?")
-    print("Direct search result:")
-    print(search_result)
+    # Test simple math first
+    print("Testing simple math...")
+    response = await agent.run("What is 5 + 3?")
+    print("Math response:", response)
     print("\n" + "="*50 + "\n")
 
-    response = await agent.run(
-        "What's 7 * 8?"
-    )
-    print(response)
-    # response = await agent.run(
-    #     "What is the latest news about NVIDIA?"
-    # )
-    # print(response)
+    # Test search function
+    print("Testing search...")
+    response = await agent.run("What is the latest news about NVIDIA?")
+    print("Search response:\n", response)
+    print("\n" + "="*50 + "\n")
 
 
 # Run the agent
