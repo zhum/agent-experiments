@@ -126,7 +126,7 @@ agent = FunctionAgent(
 async def main():
     # Test simple math first
     print("Testing simple math...")
-    response = await agent.run("What is 5 + 3?")
+    response = await agent.run("What is 5 + 3 * 10?")
     print("Math response:", response)
     print("\n" + "="*50 + "\n")
 
