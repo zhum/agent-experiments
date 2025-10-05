@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
 
-from llama_index.core.agent.workflow import FunctionAgent
-from llama_index.llms.ollama import Ollama
-from llama_index.core import (
+from llama_index.core.agent.workflow import FunctionAgent  # type: ignore
+from llama_index.llms.ollama import Ollama  # type: ignore
+from llama_index.core import (  # type: ignore
     SimpleDirectoryReader,
     load_index_from_storage,
     VectorStoreIndex,
     StorageContext,
     Settings
 )
-from llama_index.vector_stores.faiss import FaissVectorStore
-from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.vector_stores.faiss import FaissVectorStore  # type: ignore
+from llama_index.embeddings.ollama import OllamaEmbedding  # type: ignore
 
-import faiss
+import faiss  # type: ignore
 
 # from IPython.display import Markdown, display
 import asyncio
 import os
+import re
 
 d = 768
 embed_model = "nomic-embed-text"
 faiss_index = faiss.IndexFlatL2(d)
 llm_model = "llama3.1-8b-long-ctx:latest"
+llm_model = "qwen3-long-ctx:latest"
 
 # Create vector store
 vector_store = FaissVectorStore(faiss_index=faiss_index)
@@ -32,30 +34,35 @@ ollama_embedding = OllamaEmbedding(
     base_url="http://localhost:11434",  # Default Ollama server address
 )
 Settings.embed_model = ollama_embedding
-# Create a RAG tool using LlamaIndex with metadata
-documents = SimpleDirectoryReader("data", filename_as_id=True).load_data()
+# Check if storage directory exists and load existing index
+if os.path.exists("./storage") and os.path.isdir("./storage"):
+    print("Loading existing index from storage...")
+    vector_store = FaissVectorStore.from_persist_dir("./storage")
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store, persist_dir="./storage"
+    )
+    index = load_index_from_storage(storage_context=storage_context)
+else:
+    print("Creating new index...")
+    # Create a RAG tool using LlamaIndex with metadata
+    documents = SimpleDirectoryReader("data", filename_as_id=True).load_data()
 
-# Add metadata to documents (file path will be automatically included)
-for doc in documents:
-    # The file_path is already included as metadata by LlamaIndex
-    # You can add additional metadata here if needed
-    doc.metadata['source_type'] = 'file'
-    doc.metadata['indexed_at'] = str(
-        os.path.getctime(doc.metadata.get('file_path', '')))
+    # Add metadata to documents (file path will be automatically included)
+    for doc in documents:
+        # The file_path is already included as metadata by LlamaIndex
+        # You can add additional metadata here if needed
+        doc.metadata['source_type'] = 'file'
+        doc.metadata['indexed_at'] = str(
+            os.path.getctime(doc.metadata.get('file_path', '')))
 
-index = VectorStoreIndex.from_documents(
-    documents,
-    storage_context=storage_context
-)
+    index = VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context
+    )
 
-# save index do disk
-index.storage_context.persist()
-# load
-# vector_store = FaissVectorStore.from_persist_dir("./storage")
-# storage_context = StorageContext.from_defaults(
-#     vector_store=vector_store, persist_dir="./storage"
-# )
-# index = load_index_from_storage(storage_context=storage_context)
+    # save index to disk
+    print("Saving index to storage...")
+    index.storage_context.persist()
 
 
 def multiply(a: float, b: float) -> float:
@@ -88,7 +95,7 @@ async def search_documents(query: str) -> str:
 
         candidates.append({
             'index': i,
-            'text': node.text[:500] + "..." if len(node.text) > 500 else node.text,
+            'text': node.text[:500] + "..." if len(node.text) > 500 else node.text,  # noqa: E501
             'filename': filename,
             'score': node.score if hasattr(node, 'score') else 0
         })
@@ -96,14 +103,18 @@ async def search_documents(query: str) -> str:
     # Create evaluation prompt
     eval_prompt = f"""Given the query: "{query}"
 
-Please evaluate these {len(candidates)} document excerpts and choose the BEST one that most directly answers the query:
+Please evaluate these {len(candidates)} document excerpts and
+choose the BEST one that most directly answers the query:
 
 """
 
     for i, candidate in enumerate(candidates):
-        eval_prompt += f"Option {i+1} (from {candidate['filename']}):\n{candidate['text']}\n\n"
+        eval_prompt += f"Option {i+1} (from " \
+                       f"{candidate['filename']}):\n{candidate['text']}\n\n"
 
-    eval_prompt += """Respond with ONLY the number (1-5) of the best option that most directly answers the query."""
+    eval_prompt += f"""
+    Respond with ONLY the number (1-{len(candidates)}) of the
+    best option that most directly answers the query."""
 
     # Use LLM to choose best result
     eval_response = await llm.acomplete(eval_prompt)
@@ -114,7 +125,8 @@ Please evaluate these {len(candidates)} document excerpts and choose the BEST on
             best_candidate = candidates[best_index]
 
             # Generate final answer using the best node
-            answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+            answer_prompt = f"""
+            Based on this document excerpt, answer the query: "{query}"
 
 Document excerpt:
 {nodes[best_index].text}
@@ -123,11 +135,15 @@ Provide a clear, concise answer based on the information in this document."""
 
             answer_response = await llm.acomplete(answer_prompt)
 
-            return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
+            return f"{answer_response.text}\n\n" \
+                   f"SOURCE FILES: {best_candidate['filename']}\n\n" \
+                   "IMPORTANT: Always mention this source file when" \
+                   "responding to the user."
         else:
             # Fallback to first result
             best_candidate = candidates[0]
-            answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+            answer_prompt = f"""
+            Based on this document excerpt, answer the query: "{query}"
 
 Document excerpt:
 {nodes[0].text}
@@ -135,12 +151,16 @@ Document excerpt:
 Provide a clear, concise answer based on the information in this document."""
 
             answer_response = await llm.acomplete(answer_prompt)
-            return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
+            return f"{answer_response.text}\n\n" \
+                   f"SOURCE FILES: {best_candidate['filename']}\n\n" \
+                   "IMPORTANT: Always mention this source file when" \
+                   " responding to the user."
 
     except (ValueError, IndexError):
         # Fallback to first result if evaluation fails
         best_candidate = candidates[0]
-        answer_prompt = f"""Based on this document excerpt, answer the query: "{query}"
+        answer_prompt = f"""
+        Based on this document excerpt, answer the query: "{query}"
 
 Document excerpt:
 {nodes[0].text}
@@ -148,7 +168,10 @@ Document excerpt:
 Provide a clear, concise answer based on the information in this document."""
 
         answer_response = await llm.acomplete(answer_prompt)
-        return f"{answer_response.text}\n\nSOURCE FILES: {best_candidate['filename']}\n\nIMPORTANT: Always mention this source file when responding to the user."
+        return f"{answer_response.text}\n\n" \
+               f"SOURCE FILES: {best_candidate['filename']}\n\n" \
+               "IMPORTANT: Always mention this source file" \
+               " when responding to the user."
 
 
 llm = Ollama(
@@ -184,18 +207,26 @@ agent = FunctionAgent(
 )
 
 
+def clean(s: str):
+    return re.sub(
+        r'<think>.*?</think>\s*', '', s, flags=re.DOTALL)
+
+
 # Now we can ask questions about the documents or do calculations
 async def main():
     # Test simple math first
     print("Testing simple math...")
-    response = await agent.run("What is 5 + 3 * 10?")
-    print("Math response:", response)
+    response = await agent.run("What is 5 + 3 * 11?")
+    cleaned_response = clean(str(response))
+    print("Math response:", cleaned_response)
     print("\n" + "="*50 + "\n")
 
     # Test search function
     print("Testing search...")
     response = await agent.run("What is the latest news about NVIDIA?")
-    print("Search response:\n", response)
+    # Clean up any <think> tags from the response
+    cleaned_response = clean(str(response))
+    print("Search response:\n", cleaned_response)
     print("\n" + "="*50 + "\n")
 
 
