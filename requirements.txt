@@ -1,4 +1,9 @@
- llama-index-llms-ollama
- llama-index-embeddings-ollama
- llama-index-vector-stores-faiss
+# git@github.com:ihor-sokoliuk/mcp-searxng.git
+llama-index-llms-ollama
+llama-index-embeddings-ollama
+llama-index-vector-stores-faiss
 faiss-cpu
+#mcp[cli]
+llama-index-tools-mcp
+basic-memory
+

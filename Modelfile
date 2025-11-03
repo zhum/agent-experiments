@@ -1,0 +1,3 @@
+FROM gpt-oss:latest
+PARAMETER num_ctx 64000
+# ollama create llama3.1-8b-long-ctx -f Modelfile
