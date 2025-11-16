@@ -1,0 +1,7 @@
+data/
+storage/
+venv/
+*~
+__pycache__/
+
+
